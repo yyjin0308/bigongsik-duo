@@ -6,7 +6,14 @@ const safe=(a,b)=>{const x=Buffer.from(String(a)),y=Buffer.from(String(b));retur
 const pwHash=p=>{const salt=crypto.randomBytes(16).toString('hex');return salt+':'+crypto.scryptSync(p,salt,64).toString('hex')};
 const pwCheck=(p,h)=>{try{const [salt,stored]=h.split(':');return safe(crypto.scryptSync(p,salt,64).toString('hex'),stored)}catch{return false}};
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status})};
-const db=()=>{if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY||!process.env.SESSION_SECRET||process.env.SESSION_SECRET.length<32)fail(503,'서버 환경변수가 설정되지 않았습니다.');return createClient(process.env.SUPABASE_URL,process.env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}})};
+const db=()=>{
+ const raw=String(process.env.SUPABASE_URL||'').trim();
+ if(!raw||!process.env.SUPABASE_SERVICE_ROLE_KEY||!process.env.SESSION_SECRET||process.env.SESSION_SECRET.length<32)fail(503,'서버 환경변수가 설정되지 않았습니다.');
+ let u;try{u=new URL(raw)}catch{fail(503,'SUPABASE_URL 형식이 올바르지 않습니다. Vercel 환경변수를 확인하세요.')}
+ if(u.protocol!=='https:'||u.pathname!=='/'||u.search||u.hash||!/^([a-z0-9-]+\.)?supabase\.co$/i.test(u.hostname)||u.username||u.password)fail(503,'SUPABASE_URL에는 https://프로젝트ID.supabase.co 형식의 프로젝트 기본 주소만 입력하세요.');
+ if(/^(YOUR_PROJECT|abcde)$/i.test(u.hostname.split('.')[0]))fail(503,'SUPABASE_URL에 예시 주소가 입력되어 있습니다.');
+ return createClient(u.origin,process.env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}})
+};
 const get=async(q)=>{const r=await q;if(r.error)throw r.error;return r.data};
 const cookie=(req,key)=>{const m=(req.headers.cookie||'').match(new RegExp('(?:^|;\\s*)'+key+'=([^;]*)'));return m?decodeURIComponent(m[1]):''};
 const sign=s=>crypto.createHmac('sha256',process.env.SESSION_SECRET).update(s).digest('hex');
@@ -55,4 +62,4 @@ const pm=route.match(/^\/api\/profiles\/([a-f0-9-]+)$/);if(pm&&['PUT','DELETE'].
 if(route==='/api/invites'&&m==='POST'){const ids=Array.isArray(b.profileIds)?[...new Set(b.profileIds.filter(validId))]:[];if(!ids.length)fail(400,'공개할 프로필을 선택해주세요.');const matched=await get(s.from('profiles').select('id').in('id',ids).eq('consent',true));if(matched.length!==ids.length)fail(400,'등록된 공개 동의 프로필만 선택할 수 있습니다.');const days=Number(b.days||7);if(!Number.isInteger(days)||days<1||days>90)fail(400,'유효기간은 1~90일입니다.');const raw=crypto.randomBytes(32).toString('base64url');const inv=await get(s.from('invites').insert({label:String(b.label||'초대 손님').slice(0,60),token_hash:hash(raw),profile_ids:ids,expires_at:new Date(Date.now()+days*86400000).toISOString()}).select('*').single());const base=(process.env.PUBLIC_BASE_URL||`https://${req.headers['x-forwarded-host']||req.headers.host}`).replace(/\/$/,'');return reply(res,201,{...mapInvite(inv),url:base+'/?invite='+encodeURIComponent(raw)})}
 const im=route.match(/^\/api\/invites\/([a-f0-9-]+)$/);if(im&&m==='PATCH'){if(typeof b.active!=='boolean')fail(400,'상태를 선택해주세요.');const inv=await get(s.from('invites').update({active:b.active}).eq('id',im[1]).select('id').maybeSingle());if(!inv)fail(404,'초대 링크가 없습니다.');return reply(res,200,{ok:true})}
 fail(404,'API를 찾을 수 없습니다.');
-}catch(e){reply(res,e.status||500,{error:e.status?e.message:'서버 오류가 발생했습니다.'});if(!e.status)console.error(e)}};
+}catch(e){reply(res,e.status||500,{error:e.status?e.message:'서버 오류가 발생했습니다.'});if(!e.status)console.error('[API ERROR]',{code:e.code||'UNKNOWN',message:e.message||'unknown',route:req.url?.split('?')[0]})}};
